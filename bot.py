@@ -1,158 +1,91 @@
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart, Command
+import os
+import asyncio
 from aiohttp import web
-from bson import ObjectId
-from datetime import datetime
 
-from config import BOT_TOKEN, WEBHOOK_URL
-from database import (
-    categories, buttons, sudo_users,
-    force_channels, clicks
-)
-from keyboards import (
-    force_join_keyboard,
-    categories_keyboard,
-    buttons_keyboard
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import Update
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
+
+# ────────────────── ENV VARIABLES ──────────────────
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN is not set")
+
+if not WEBHOOK_URL:
+    raise RuntimeError("WEBHOOK_URL is not set")
+
+# Parse SUDO_USERS correctly (VERY IMPORTANT)
+SUDO_USERS = set(
+    int(x) for x in os.getenv("SUDO_USERS", "").split(",") if x
 )
 
-bot = Bot(token=BOT_TOKEN)
+print("SUDO_USERS loaded:", SUDO_USERS)
+
+# ────────────────── BOT SETUP ──────────────────
+
+bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher()
 
-# ---------- HELPERS ----------
-async def is_sudo(user_id):
-    return await sudo_users.find_one({"user_id": user_id})
 
-async def missing_channels(user_id):
-    required = await force_channels.find().to_list(50)
-    missing = []
+# ────────────────── AUTH DECORATOR ──────────────────
 
-    for ch in required:
-        try:
-            member = await bot.get_chat_member(ch["username"], user_id)
-            if member.status not in ("member", "administrator", "creator"):
-                missing.append(ch)
-        except:
-            missing.append(ch)
+def sudo_only(handler):
+    async def wrapper(message: types.Message, *args, **kwargs):
+        user_id = message.from_user.id
+        print("Incoming user:", user_id)
 
-    return missing
+        if user_id not in SUDO_USERS:
+            await message.reply("🚫 Unauthorized")
+            return
+        return await handler(message, *args, **kwargs)
 
-# ---------- START ----------
-@dp.message(CommandStart())
-async def start(message: types.Message):
-    missing = await missing_channels(message.from_user.id)
+    return wrapper
 
-    if missing:
-        return await message.answer(
-            "🚫 You must join all channels below:",
-            reply_markup=force_join_keyboard(missing)
-        )
 
-    cats = await categories.find().to_list(100)
-    if not cats:
-        return await message.answer("No categories available yet.")
+# ────────────────── COMMANDS ──────────────────
 
-    await message.answer(
-        "📂 Choose a category:",
-        reply_markup=categories_keyboard(cats)
-    )
+@dp.message(Command("start"))
+@sudo_only
+async def start_cmd(message: types.Message):
+    await message.reply("✅ Bot is running and you are authorized.")
 
-# ---------- CALLBACKS ----------
-@dp.callback_query()
-async def callbacks(call: types.CallbackQuery):
-    if call.data == "check_join":
-        return await start(call.message)
 
-    if call.data.startswith("cat:"):
-        cat_id = call.data.split(":")[1]
-        btns = await buttons.find({"category_id": cat_id}).to_list(100)
+@dp.message(Command("ping"))
+@sudo_only
+async def ping_cmd(message: types.Message):
+    await message.reply("🏓 Pong!")
 
-        if not btns:
-            return await call.message.edit_text("No links here yet.")
 
-        await call.message.edit_text(
-            "🔗 Choose a link:",
-            reply_markup=buttons_keyboard(btns)
-        )
+# ────────────────── WEBHOOK HANDLER ──────────────────
 
-    if call.data.startswith("click:"):
-        btn_id = call.data.split(":")[1]
-        button = await buttons.find_one({"_id": ObjectId(btn_id)})
-
-        if not button:
-            return await call.answer("Invalid link", show_alert=True)
-
-        # 🔢 Analytics
-        await clicks.insert_one({
-            "button_id": btn_id,
-            "user_id": call.from_user.id,
-            "timestamp": datetime.utcnow()
-        })
-
-        await call.answer("Opening link…")
-        await call.message.answer(button["url"])
-
-    if call.data == "back":
-        cats = await categories.find().to_list(100)
-        await call.message.edit_text(
-            "📂 Choose a category:",
-            reply_markup=categories_keyboard(cats)
-        )
-
-# ---------- ADMIN ----------
-@dp.message(Command("addchannel"))
-async def add_channel(message: types.Message):
-    if not await is_sudo(message.from_user.id):
-        return await message.answer("❌ Unauthorized")
-
-    username = message.text.replace("/addchannel", "").strip()
-    await force_channels.insert_one({"username": username})
-    await message.answer(f"✅ Channel added: {username}")
-
-@dp.message(Command("delchannel"))
-async def del_channel(message: types.Message):
-    if not await is_sudo(message.from_user.id):
-        return await message.answer("❌ Unauthorized")
-
-    username = message.text.replace("/delchannel", "").strip()
-    await force_channels.delete_one({"username": username})
-    await message.answer(f"🗑️ Channel removed: {username}")
-
-@dp.message(Command("stats"))
-async def stats(message: types.Message):
-    if not await is_sudo(message.from_user.id):
-        return await message.answer("❌ Unauthorized")
-
-    pipeline = [
-        {"$group": {"_id": "$button_id", "count": {"$sum": 1}}},
-        {"$sort": {"count": -1}}
-    ]
-
-    data = await clicks.aggregate(pipeline).to_list(20)
-    if not data:
-        return await message.answer("No clicks yet.")
-
-    text = "📊 Click Stats:\n\n"
-    for d in data:
-        btn = await buttons.find_one({"_id": ObjectId(d["_id"])})
-        text += f"• {btn['text']} → {d['count']} clicks\n"
-
-    await message.answer(text)
-
-# ---------- WEBHOOK ----------
-async def handle_webhook(request):
-    update = types.Update(**await request.json())
+async def handle_webhook(request: web.Request):
+    data = await request.json()
+    update = Update.model_validate(data)
     await dp.feed_update(bot, update)
     return web.Response(text="OK")
 
-async def main():
+
+# ────────────────── APP LIFECYCLE ──────────────────
+
+async def on_startup(app: web.Application):
+    print("Setting webhook...")
+    await bot.set_webhook(WEBHOOK_URL)
+    print("Webhook set successfully")
+
+
+async def on_shutdown(app: web.Application):
+    print("Deleting webhook...")
+    await bot.delete_webhook()
+    await bot.session.close()
+
+
+async def create_app():
     app = web.Application()
-    app.router.add_post("/webhook", webhook_handler)
-
-    async def on_startup(app):
-        await bot.set_webhook(WEBHOOK_URL)
-
-    async def on_shutdown(app):
-        await bot.delete_webhook()
+    app.router.add_post("/webhook", handle_webhook)
 
     app.on_startup.append(on_startup)
     app.on_shutdown.append(on_shutdown)
@@ -160,5 +93,7 @@ async def main():
     return app
 
 
+# ────────────────── MAIN ──────────────────
+
 if __name__ == "__main__":
-    web.run_app(main(), port=8000)
+    web.run_app(create_app(), port=8000)

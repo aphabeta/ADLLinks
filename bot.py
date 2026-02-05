@@ -27,8 +27,13 @@ SUDO_USERS = {
 }
 
 # ================= BOT =================
+from aiogram.client.default import DefaultBotProperties
 
-bot = Bot(BOT_TOKEN, parse_mode="HTML")
+bot = Bot(
+    BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode="HTML")
+)
+
 dp = Dispatcher()
 router = Router()
 dp.include_router(router)

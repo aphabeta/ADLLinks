@@ -32,12 +32,15 @@ dp = Dispatcher()
 
 # ───────── AUTH ─────────
 
+from functools import wraps
+
 def sudo_only(handler):
-    async def wrapper(message: types.Message):
+    @wraps(handler)
+    async def wrapper(message: types.Message, **kwargs):
         if message.from_user.id not in SUDO_USERS:
             await message.answer("🚫 Unauthorized")
             return
-        return await handler(message)
+        return await handler(message, **kwargs)
     return wrapper
 
 

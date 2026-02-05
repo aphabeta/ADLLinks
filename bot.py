@@ -145,10 +145,20 @@ async def handle_webhook(request):
     return web.Response(text="OK")
 
 async def main():
-    await bot.set_webhook(WEBHOOK_URL)
     app = web.Application()
-    app.router.add_post("/webhook", handle_webhook)
+    app.router.add_post("/webhook", webhook_handler)
+
+    async def on_startup(app):
+        await bot.set_webhook(WEBHOOK_URL)
+
+    async def on_shutdown(app):
+        await bot.delete_webhook()
+
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
     return app
+
 
 if __name__ == "__main__":
     web.run_app(main(), port=8000)

@@ -275,9 +275,10 @@ async def handle_webhook(request: web.Request):
 async def on_startup(app: web.Application):
     try:
         await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
-        print("Webhook set successfully")
+        print("✅ Webhook set successfully")
     except Exception as e:
-        print("Webhook setup failed:", e)
+        # DO NOT crash the app
+        print("⚠️ Webhook setup failed, will retry automatically:", e)
 
 async def on_shutdown(app: web.Application):
     await bot.delete_webhook()
